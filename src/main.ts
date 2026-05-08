@@ -575,12 +575,24 @@ export default class OpenTabSettingsPlugin extends Plugin {
         // Double-click handler: promote the preview tab to permanent
         this.boundDblClickHandler = (evt: MouseEvent) => {
             if (!this.settings.previewTabs) return;
-            const target = (evt.target as HTMLElement).closest('.nav-file-title');
-            if (!target) return;
-            const filePath = target.getAttribute('data-path');
-            if (!filePath) return;
 
-            this.promotePreviewForFile(filePath);
+            // File explorer double-click
+            const navTarget = (evt.target as HTMLElement).closest('.nav-file-title');
+            if (navTarget) {
+                const filePath = navTarget.getAttribute('data-path');
+                if (!filePath) return;
+                this.promotePreviewForFile(filePath);
+                return;
+            }
+
+            // Tab header double-click
+            const tabTarget = (evt.target as HTMLElement).closest('.workspace-tab-header');
+            if (tabTarget && this.currentPreviewLeafId) {
+                const tabHeaderEl = this.getTabHeaderEl(this.currentPreviewLeafId);
+                if (tabHeaderEl === tabTarget) {
+                    this.promotePreviewTab(this.currentPreviewLeafId);
+                }
+            }
         };
         document.addEventListener('dblclick', this.boundDblClickHandler, true);
 
@@ -653,9 +665,13 @@ export default class OpenTabSettingsPlugin extends Plugin {
         }
     }
 
-    private updatePreviewStyle(leafId: string, isPreview: boolean) {
+    private getTabHeaderEl(leafId: string): HTMLElement | undefined {
         const leaf = this.app.workspace.getLeafById(leafId);
-        const tabHeader = (leaf as unknown as { readonly tabHeaderEl?: HTMLElement })?.tabHeaderEl;
+        return (leaf as unknown as { readonly tabHeaderEl?: HTMLElement })?.tabHeaderEl;
+    }
+
+    private updatePreviewStyle(leafId: string, isPreview: boolean) {
+        const tabHeader = this.getTabHeaderEl(leafId);
         if (tabHeader) {
             tabHeader.classList.toggle('is-preview-tab', isPreview);
         }
