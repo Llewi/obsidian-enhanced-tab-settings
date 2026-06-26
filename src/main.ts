@@ -68,6 +68,9 @@ export default class OpenTabSettingsPlugin extends Plugin {
     private previewHandlersRegistered: boolean = false;
     private boundClickHandler: ((evt: MouseEvent) => void) | null = null;
     private boundDblClickHandler: ((evt: MouseEvent) => void) | null = null;
+    private quickOpenActive = false;
+    private quickOpenObserver: MutationObserver | null = null;
+    private quickOpenClearTimer: ReturnType<typeof setTimeout> | null = null;
 
     async onload() {
         await this.loadSettings();
@@ -168,13 +171,18 @@ export default class OpenTabSettingsPlugin extends Plugin {
                         const settings = {...plugin.settings, ...override};
                         const activeLeaf = this.getActiveViewOfType(View)?.leaf;
 
-                        // Preview tab: intercept default (non-split, non-window) opens from file explorer
+                        // Preview tab: intercept default (non-split, non-window) opens.
+                        // nextOpenIsPreview is set by the file-explorer click handler and the Quick Open
+                        // click handler. quickOpenActive is set by a MutationObserver when the Quick Open
+                        // prompt is visible; it covers the keyboard-Enter path where the keymap processes
+                        // the event before any DOM listener can set nextOpenIsPreview.
                         const shouldPreview = (
                             plugin.settings.previewTabs &&
-                            plugin.nextOpenIsPreview &&
+                            (plugin.nextOpenIsPreview || plugin.quickOpenActive) &&
                             !openMode
                         );
-                        plugin.nextOpenIsPreview = false; // consume the flag
+                        plugin.nextOpenIsPreview = false; // consume
+                        if (shouldPreview) plugin.quickOpenActive = false; // consume to prevent repeat triggers
 
                         let leaf: WorkspaceLeaf;
                         if (shouldPreview) {
@@ -232,11 +240,12 @@ export default class OpenTabSettingsPlugin extends Plugin {
                 },
 
                 // Patch openLinkText to detect Quick Open modal selections (both click and keyboard).
-                // The modal is still in the DOM when onChooseItem fires, so checking .prompt here is
-                // reliable regardless of which input method the user used — no keyboard event needed.
+                // quickOpenActive is set by a MutationObserver when .prompt appears and stays true
+                // for 100 ms after the modal closes — long enough to cover the synchronous
+                // onChooseItem → openLinkText → getLeaf call chain even after the DOM is gone.
                 openLinkText: (oldMethod) => {
                     return function(this: Workspace, linktext: string, sourcePath: string, newLeaf?: PaneType | boolean, ...args: unknown[]): Promise<void> {
-                        if (plugin.settings.previewTabs && !newLeaf && document.querySelector('.prompt')) {
+                        if (plugin.settings.previewTabs && !newLeaf && plugin.quickOpenActive) {
                             plugin.nextOpenIsPreview = true;
                         }
                         return (oldMethod as (...args: unknown[]) => Promise<void>).call(this, linktext, sourcePath, newLeaf, ...args);
@@ -560,6 +569,34 @@ export default class OpenTabSettingsPlugin extends Plugin {
         if (this.previewHandlersRegistered || !this.settings.previewTabs) return;
         this.previewHandlersRegistered = true;
 
+        // Track when a Quick Open prompt (.prompt) is open so the openLinkText patch can detect
+        // modal selections even after the modal has been removed from the DOM.
+        // Modal containers are direct children of document.body, so childList without subtree suffices.
+        this.quickOpenObserver = new MutationObserver((mutations) => {
+            for (const mutation of mutations) {
+                for (const added of mutation.addedNodes) {
+                    if (added instanceof Element && added.querySelector('.prompt')) {
+                        this.quickOpenActive = true;
+                        if (this.quickOpenClearTimer !== null) {
+                            clearTimeout(this.quickOpenClearTimer);
+                            this.quickOpenClearTimer = null;
+                        }
+                    }
+                }
+                for (const removed of mutation.removedNodes) {
+                    if (removed instanceof Element && removed.querySelector('.prompt') && this.quickOpenActive) {
+                        // Keep the flag alive briefly — openLinkText is called synchronously
+                        // in the same JS task as close(), so 100 ms is more than enough.
+                        this.quickOpenClearTimer = setTimeout(() => {
+                            this.quickOpenActive = false;
+                            this.quickOpenClearTimer = null;
+                        }, 100);
+                    }
+                }
+            }
+        });
+        this.quickOpenObserver.observe(document.body, { childList: true });
+
         // Click handler: detect file explorer and Quick Open modal clicks and set preview flag
         this.boundClickHandler = (evt: MouseEvent) => {
             if (!this.settings.previewTabs) return;
@@ -654,7 +691,16 @@ export default class OpenTabSettingsPlugin extends Plugin {
             document.removeEventListener('dblclick', this.boundDblClickHandler, true);
             this.boundDblClickHandler = null;
         }
-this.previewHandlersRegistered = false;
+        if (this.quickOpenObserver) {
+            this.quickOpenObserver.disconnect();
+            this.quickOpenObserver = null;
+        }
+        this.quickOpenActive = false;
+        if (this.quickOpenClearTimer !== null) {
+            clearTimeout(this.quickOpenClearTimer);
+            this.quickOpenClearTimer = null;
+        }
+        this.previewHandlersRegistered = false;
     }
 
     private isPreviewTab(leafId: string): boolean {
