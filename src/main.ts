@@ -68,7 +68,6 @@ export default class OpenTabSettingsPlugin extends Plugin {
     private previewHandlersRegistered: boolean = false;
     private boundClickHandler: ((evt: MouseEvent) => void) | null = null;
     private boundDblClickHandler: ((evt: MouseEvent) => void) | null = null;
-    private boundQuickOpenKeyHandler: ((evt: KeyboardEvent) => void) | null = null;
 
     async onload() {
         await this.loadSettings();
@@ -230,6 +229,18 @@ export default class OpenTabSettingsPlugin extends Plugin {
                             return plugin.getUnpinnedLeaf(focus);
                         }
                     }
+                },
+
+                // Patch openLinkText to detect Quick Open modal selections (both click and keyboard).
+                // The modal is still in the DOM when onChooseItem fires, so checking .prompt here is
+                // reliable regardless of which input method the user used — no keyboard event needed.
+                openLinkText: (oldMethod) => {
+                    return function(this: Workspace, linktext: string, sourcePath: string, newLeaf?: PaneType | boolean, ...args: unknown[]): Promise<void> {
+                        if (plugin.settings.previewTabs && !newLeaf && document.querySelector('.prompt')) {
+                            plugin.nextOpenIsPreview = true;
+                        }
+                        return (oldMethod as (...args: unknown[]) => Promise<void>).call(this, linktext, sourcePath, newLeaf, ...args);
+                    };
                 },
             }));
 
@@ -583,19 +594,6 @@ export default class OpenTabSettingsPlugin extends Plugin {
         };
         document.addEventListener('click', this.boundClickHandler, true);
 
-        // Quick Open Enter key: confirm selection with keyboard
-        this.boundQuickOpenKeyHandler = (evt: KeyboardEvent) => {
-            if (!this.settings.previewTabs) return;
-            if (evt.key !== 'Enter') return;
-            if (evt.ctrlKey || evt.metaKey || evt.shiftKey || evt.altKey) return;
-            const selected = document.querySelector('.prompt .suggestion-item.is-selected');
-            if (selected) {
-                this.nextOpenIsPreview = true;
-                // See comment in click handler above for why we self-clear after a macrotask.
-                setTimeout(() => { this.nextOpenIsPreview = false; }, 0);
-            }
-        };
-        document.addEventListener('keydown', this.boundQuickOpenKeyHandler, true);
 
         // Double-click handler: promote the preview tab to permanent
         this.boundDblClickHandler = (evt: MouseEvent) => {
@@ -656,11 +654,7 @@ export default class OpenTabSettingsPlugin extends Plugin {
             document.removeEventListener('dblclick', this.boundDblClickHandler, true);
             this.boundDblClickHandler = null;
         }
-        if (this.boundQuickOpenKeyHandler) {
-            document.removeEventListener('keydown', this.boundQuickOpenKeyHandler, true);
-            this.boundQuickOpenKeyHandler = null;
-        }
-        this.previewHandlersRegistered = false;
+this.previewHandlersRegistered = false;
     }
 
     private isPreviewTab(leafId: string): boolean {
