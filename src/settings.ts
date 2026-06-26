@@ -167,7 +167,7 @@ export class OpenTabSettingsPluginSettingTab extends PluginSettingTab {
 
         new Setting(this.containerEl)
             .setName('Preview tabs')
-            .setDesc('Single click in file explorer previews files in a temporary tab. Double click or editing promotes to a permanent tab.')
+            .setDesc('Single click in file explorer or selecting from Quick Open (Ctrl+O) previews files in a temporary tab. Double click or editing promotes to a permanent tab.')
             .addToggle(toggle =>
                 toggle
                     .setValue(this.plugin.settings.previewTabs)

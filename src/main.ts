@@ -68,6 +68,7 @@ export default class OpenTabSettingsPlugin extends Plugin {
     private previewHandlersRegistered: boolean = false;
     private boundClickHandler: ((evt: MouseEvent) => void) | null = null;
     private boundDblClickHandler: ((evt: MouseEvent) => void) | null = null;
+    private boundQuickOpenKeyHandler: ((evt: KeyboardEvent) => void) | null = null;
 
     async onload() {
         await this.loadSettings();
@@ -548,29 +549,53 @@ export default class OpenTabSettingsPlugin extends Plugin {
         if (this.previewHandlersRegistered || !this.settings.previewTabs) return;
         this.previewHandlersRegistered = true;
 
-        // Click handler: detect file explorer clicks and set preview flag
+        // Click handler: detect file explorer and Quick Open modal clicks and set preview flag
         this.boundClickHandler = (evt: MouseEvent) => {
             if (!this.settings.previewTabs) return;
-            const target = (evt.target as HTMLElement).closest('.nav-file-title');
-            if (!target || !target.getAttribute('data-path')) return;
-            // Ignore modifier clicks — those go through existing mod-click behavior
             if (evt.button !== 0 || evt.ctrlKey || evt.metaKey || evt.shiftKey || evt.altKey) return;
 
-            // Don't preview if file is already open in a permanent tab — let normal dedup handle it.
-            // Reusing the preview leaf for a different file that's already open elsewhere causes
-            // openFile to be a no-op on the matched leaf (same file already showing).
-            const filePath = target.getAttribute('data-path')!;
-            const file = this.app.vault.getAbstractFileByPath(filePath);
-            if (file instanceof TFile) {
-                const permanentMatches = this.findMatchingLeaves(file).filter(l => !this.isPreviewTab(l.id));
-                if (permanentMatches.length > 0) {
-                    return;
+            // File explorer single click
+            const navTarget = (evt.target as HTMLElement).closest('.nav-file-title');
+            if (navTarget?.getAttribute('data-path')) {
+                // Don't preview if file is already open in a permanent tab — let normal dedup handle it.
+                // Reusing the preview leaf for a different file that's already open elsewhere causes
+                // openFile to be a no-op on the matched leaf (same file already showing).
+                const filePath = navTarget.getAttribute('data-path')!;
+                const file = this.app.vault.getAbstractFileByPath(filePath);
+                if (file instanceof TFile) {
+                    const permanentMatches = this.findMatchingLeaves(file).filter(l => !this.isPreviewTab(l.id));
+                    if (permanentMatches.length > 0) return;
                 }
+                this.nextOpenIsPreview = true;
+                return;
             }
 
-            this.nextOpenIsPreview = true;
+            // Quick Open modal click
+            const suggestionItem = (evt.target as HTMLElement).closest('.prompt .suggestion-item');
+            if (suggestionItem) {
+                this.nextOpenIsPreview = true;
+                // Safety net: clear the flag after the current event loop turn so a stale flag from
+                // a non-file-opening modal (e.g. command palette) doesn't affect the next getLeaf call.
+                // getLeaf is called synchronously by the Quick Switcher's selection handler (same macrotask),
+                // so it will have consumed the flag before this timeout fires.
+                setTimeout(() => { this.nextOpenIsPreview = false; }, 0);
+            }
         };
         document.addEventListener('click', this.boundClickHandler, true);
+
+        // Quick Open Enter key: confirm selection with keyboard
+        this.boundQuickOpenKeyHandler = (evt: KeyboardEvent) => {
+            if (!this.settings.previewTabs) return;
+            if (evt.key !== 'Enter') return;
+            if (evt.ctrlKey || evt.metaKey || evt.shiftKey || evt.altKey) return;
+            const selected = document.querySelector('.prompt .suggestion-item.is-selected');
+            if (selected) {
+                this.nextOpenIsPreview = true;
+                // See comment in click handler above for why we self-clear after a macrotask.
+                setTimeout(() => { this.nextOpenIsPreview = false; }, 0);
+            }
+        };
+        document.addEventListener('keydown', this.boundQuickOpenKeyHandler, true);
 
         // Double-click handler: promote the preview tab to permanent
         this.boundDblClickHandler = (evt: MouseEvent) => {
@@ -630,6 +655,10 @@ export default class OpenTabSettingsPlugin extends Plugin {
         if (this.boundDblClickHandler) {
             document.removeEventListener('dblclick', this.boundDblClickHandler, true);
             this.boundDblClickHandler = null;
+        }
+        if (this.boundQuickOpenKeyHandler) {
+            document.removeEventListener('keydown', this.boundQuickOpenKeyHandler, true);
+            this.boundQuickOpenKeyHandler = null;
         }
         this.previewHandlersRegistered = false;
     }
